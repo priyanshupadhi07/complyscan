@@ -1,5 +1,10 @@
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+// Detect if running locally on a dev server (e.g. port 3000 or 5500) or directly on Vercel
+const isLocalStaticDev = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost")
+    && window.location.port !== "8000";
+
+const API_BASE = isLocalStaticDev ? "http://127.0.0.1:8000" : "";
+const API_BASE_URL = API_BASE;
 
 const scanForm = document.getElementById("scanForm");
 const labelImage = document.getElementById("labelImage");
@@ -144,13 +149,10 @@ scanForm.addEventListener("submit", async function (event) {
         formData.append("file", file);
 
 
-        const response = await fetch(
-            `${API_BASE_URL}/api/scan`,
-            {
-                method: "POST",
-                body: formData
-            }
-        );
+        const response = await fetch(`${API_BASE}/api/scan`, {
+            method: "POST",
+            body: formData
+        });
 
 
         if (!response.ok) {

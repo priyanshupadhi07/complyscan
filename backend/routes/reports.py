@@ -3,20 +3,34 @@ ComplyScan - PDF Report API
 
 Provides:
     GET /api/report/{scan_id}/pdf
+    GET /report/{scan_id}/pdf
 """
 
+import sys
 from io import BytesIO
-
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import Scan
+# Ensure imports resolve whether run from root, backend/, or Vercel
+backend_dir = Path(__file__).resolve().parent.parent
+root_dir = backend_dir.parent
 
+for path in (str(backend_dir), str(root_dir)):
+    if path not in sys.path:
+        sys.path.append(path)
 
+try:
+    from backend.database import get_db
+    from backend.models import Scan
+except ImportError:
+    from database import get_db
+    from models import Scan
+
+# Set base prefix as "/report" (main.py mounts it both with and without /api)
 router = APIRouter(
-    prefix="/api/report",
+    prefix="/report",
     tags=["Reports"]
 )
 
@@ -46,17 +60,22 @@ def generate_report(
     # --------------------------------------------------------
     # IMPORT REPORTLAB
     # --------------------------------------------------------
-
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import (
-        SimpleDocTemplate,
-        Paragraph,
-        Spacer,
-        Table,
-        TableStyle
-    )
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Paragraph,
+            Spacer,
+            Table,
+            TableStyle
+        )
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="PDF generation dependency 'reportlab' is missing on the server."
+        )
 
     # --------------------------------------------------------
     # CREATE PDF IN MEMORY
@@ -74,34 +93,20 @@ def generate_report(
     )
 
     styles = getSampleStyleSheet()
-
     story = []
 
-    # --------------------------------------------------------
     # TITLE
-    # --------------------------------------------------------
-
-    story.append(
-        Paragraph(
-            "COMPLYSCAN",
-            styles["Title"]
-        )
-    )
-
+    story.append(Paragraph("COMPLYSCAN", styles["Title"]))
     story.append(
         Paragraph(
             "Packaged Commodity Label Compliance Report",
             styles["Heading2"]
         )
     )
-
     story.append(Spacer(1, 15))
 
-    # --------------------------------------------------------
     # SCAN INFORMATION
-    # --------------------------------------------------------
-
-    status = scan.overall_status.upper()
+    status = (scan.overall_status or "UNKNOWN").upper()
 
     scan_info = [
         ["Scan ID", str(scan.id)],
@@ -109,11 +114,7 @@ def generate_report(
         ["Timestamp", str(scan.timestamp)],
     ]
 
-    table = Table(
-        scan_info,
-        colWidths=[140, 330]
-    )
-
+    table = Table(scan_info, colWidths=[140, 330])
     table.setStyle(
         TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -127,63 +128,28 @@ def generate_report(
     story.append(table)
     story.append(Spacer(1, 20))
 
-    # --------------------------------------------------------
     # EXTRACTED TEXT
-    # --------------------------------------------------------
-
-    story.append(
-        Paragraph(
-            "Extracted Text",
-            styles["Heading2"]
-        )
-    )
+    story.append(Paragraph("Extracted Text", styles["Heading2"]))
 
     extracted_text = scan.extracted_text or "No extracted text available."
+    extracted_text = extracted_text.replace("\n", "<br/>")
 
-    # Convert new lines into HTML line breaks.
-    extracted_text = extracted_text.replace(
-        "\n",
-        "<br/>"
-    )
-
-    story.append(
-        Paragraph(
-            extracted_text,
-            styles["BodyText"]
-        )
-    )
-
+    story.append(Paragraph(extracted_text, styles["BodyText"]))
     story.append(Spacer(1, 20))
 
-    # --------------------------------------------------------
     # RULE RESULTS
-    # --------------------------------------------------------
+    story.append(Paragraph("Compliance Rule Results", styles["Heading2"]))
 
-    story.append(
-        Paragraph(
-            "Compliance Rule Results",
-            styles["Heading2"]
-        )
-    )
+    rule_data = [["Rule", "Status", "Details"]]
 
-    rule_data = [
-        ["Rule", "Status", "Details"]
-    ]
-
-    for result in scan.rule_results:
-
+    for result in getattr(scan, "rule_results", []):
         rule_data.append([
             result.rule_name,
             result.status.upper(),
             result.detail or ""
         ])
 
-    rule_table = Table(
-        rule_data,
-        colWidths=[150, 70, 250],
-        repeatRows=1
-    )
-
+    rule_table = Table(rule_data, colWidths=[150, 70, 250], repeatRows=1)
     rule_table.setStyle(
         TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -196,12 +162,8 @@ def generate_report(
 
     story.append(rule_table)
 
-    # --------------------------------------------------------
     # BUILD PDF
-    # --------------------------------------------------------
-
     document.build(story)
-
     buffer.seek(0)
 
     filename = f"complyscan_report_{scan.id}.pdf"
